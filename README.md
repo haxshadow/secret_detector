@@ -68,5 +68,5 @@ File: config.py
 ```
 
 ## 👨‍💻 Developers
--[@haxshadow](https://github.com/haxshadow)
--[@ibrahimsql](https://github.com/ibrahimsql)
+ [@haxshadow](https://github.com/haxshadow)
+ [@ibrahimsql](https://github.com/ibrahimsql)
