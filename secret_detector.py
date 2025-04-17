@@ -361,6 +361,7 @@ class SecretDetector:
             try:
                 parsed = urlparse(url)
                 if not parsed.scheme or not parsed.netloc:
+                    print(f"[is_valid_url] Rejected (no scheme/netloc): {url}")
                     return False
                 
                 # Domain matching
@@ -383,12 +384,20 @@ class SecretDetector:
                 }
                 
                 path = parsed.path.lower()
-                return (
+                for ext in excluded_extensions:
+                    if path.endswith(ext):
+                        print(f"[is_valid_url] Rejected (excluded extension {ext}): {url}")
+                        return False
+                valid = (
                     domain_match and
                     parsed.scheme in ['http', 'https'] and
                     not any(path.endswith(ext) for ext in excluded_extensions)
                 )
-            except:
+                if valid:
+                    print(f"[is_valid_url] Accepted: {url}")
+                return valid
+            except Exception as e:
+                print(f"[is_valid_url] Exception for {url}: {e}")
                 return False
 
         def extract_urls(url: str, html_content: str) -> set:
@@ -406,9 +415,12 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, link)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls] Found: {link} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls] Exception for {link}: {e}")
                                 continue
                 
                 # Extract URLs from onclick attributes
@@ -420,9 +432,12 @@ class SecretDetector:
                         try:
                             absolute_url = urljoin(url, match[0])
                             normalized_url = normalize_url(absolute_url)
+                            print(f"[extract_urls][onclick] Found: {match[0]} -> {normalized_url}")
                             if is_valid_url(normalized_url):
                                 urls.add(normalized_url)
-                        except:
+                                print(f"[extract_urls][onclick] Added: {normalized_url}")
+                        except Exception as e:
+                            print(f"[extract_urls][onclick] Exception for {match[0]}: {e}")
                             continue
                 
                 # Extract URLs from inline JavaScript
@@ -433,9 +448,12 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match[0])
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][script] Found: {match[0]} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls][script] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][script] Exception for {match[0]}: {e}")
                                 continue
                 
                 # Extract URLs from CSS
@@ -446,14 +464,15 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][style] Found: {match} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls][style] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][style] Exception for {match}: {e}")
                                 continue
-                
             except Exception as e:
                 print(f"\nError extracting URLs from {url}: {str(e)}")
-            
             return urls
 
         def scan_page(url: str) -> Tuple[List[Dict[str, str]], set]:
@@ -546,8 +565,7 @@ class SecretDetector:
                     if normalized_url not in scanned_urls and normalized_url not in queued_urls:
                         urls_to_scan.append(url)
                         queued_urls.add(normalized_url)
-                
-                # Short delay to prevent overwhelming the server
+                        print(f"[queue] Queued: {normalized_url}")
                 time.sleep(0.1)
 
         print(f"\nScan completed. Scanned {len(scanned_urls)} unique pages.")
@@ -600,6 +618,7 @@ class SecretDetector:
             try:
                 parsed = urlparse(url)
                 if not parsed.scheme or not parsed.netloc:
+                    print(f"[is_valid_url] Rejected (no scheme/netloc): {url}")
                     return False
                 site_domain = domain.lower()
                 url_domain = parsed.netloc.lower().split(':')[0]
@@ -608,6 +627,8 @@ class SecretDetector:
                     url_domain.endswith(f".{site_domain}") or
                     site_domain in url_domain
                 )
+                if not domain_match:
+                    print(f"[is_valid_url] Rejected (domain mismatch): {url_domain} vs {site_domain}")
                 excluded_extensions = {
                     '.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg',
                     '.mp4', '.webm', '.mp3', '.wav', '.avi', '.mov',
@@ -615,12 +636,20 @@ class SecretDetector:
                     '.woff', '.woff2', '.ttf', '.eot'
                 }
                 path = parsed.path.lower()
-                return (
+                for ext in excluded_extensions:
+                    if path.endswith(ext):
+                        print(f"[is_valid_url] Rejected (excluded extension {ext}): {url}")
+                        return False
+                valid = (
                     domain_match and
                     parsed.scheme in ['http', 'https'] and
                     not any(path.endswith(ext) for ext in excluded_extensions)
                 )
-            except:
+                if valid:
+                    print(f"[is_valid_url] Accepted: {url}")
+                return valid
+            except Exception as e:
+                print(f"[is_valid_url] Exception for {url}: {e}")
                 return False
 
         def extract_urls(url: str, html_content: str) -> set:
@@ -634,9 +663,12 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, link)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls] Found: {link} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls] Exception for {link}: {e}")
                                 continue
                 elements_with_onclick = soup.find_all(attrs={"onclick": True})
                 for element in elements_with_onclick:
@@ -646,9 +678,12 @@ class SecretDetector:
                         try:
                             absolute_url = urljoin(url, match[0])
                             normalized_url = normalize_url(absolute_url)
+                            print(f"[extract_urls][onclick] Found: {match[0]} -> {normalized_url}")
                             if is_valid_url(normalized_url):
                                 urls.add(normalized_url)
-                        except:
+                                print(f"[extract_urls][onclick] Added: {normalized_url}")
+                        except Exception as e:
+                            print(f"[extract_urls][onclick] Exception for {match[0]}: {e}")
                             continue
                 for script in soup.find_all('script'):
                     if script.string:
@@ -657,9 +692,12 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match[0])
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][script] Found: {match[0]} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls][script] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][script] Exception for {match[0]}: {e}")
                                 continue
                 for style in soup.find_all('style'):
                     if style.string:
@@ -668,9 +706,12 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][style] Found: {match} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except:
+                                    print(f"[extract_urls][style] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][style] Exception for {match}: {e}")
                                 continue
             except Exception as e:
                 print(f"\nError extracting URLs from {url}: {str(e)}")
@@ -687,18 +728,17 @@ class SecretDetector:
                     if any(ct in content_type for ct in ['text/', 'application/json', 'application/javascript', 'application/xml']):
                         content = response.text
                         temp_findings = self.scan_text(content)
+                        if temp_findings:
+                            print(f"\n[SECRET FOUND] URL: {normalized_url}")
+                            for finding in temp_findings:
+                                print(f"    Type: {finding['type']}")
+                                print(f"    Value: {finding['value']}")
                         for finding in temp_findings:
                             finding['url'] = normalized_url
                             finding_hash = create_finding_hash(finding)
                             if finding_hash not in findings_hash_set:
                                 findings_hash_set.add(finding_hash)
                                 page_findings.append(finding)
-                                if verbose:
-                                    tqdm.write(f"\nFound in {normalized_url}:")
-                                    tqdm.write(f"Type: {finding['type']}")
-                                    tqdm.write(f"Value: {finding['value']}")
-                                    tqdm.write(f"Position: {finding['start']}-{finding['end']}")
-                                    tqdm.write("-" * 40)
                         if 'text/html' in content_type and depth < max_depth:
                             new_urls = extract_urls(url, content)
             except Exception as e:
@@ -742,6 +782,7 @@ class SecretDetector:
                     if normalized_url not in scanned_urls and normalized_url not in queued_urls:
                         urls_to_scan.append((url, current_depth + 1))
                         queued_urls.add(normalized_url)
+                        print(f"[queue] Queued: {normalized_url} (depth={current_depth + 1})")
                 time.sleep(0.1)
         print(f"\nCrawler scan completed. Scanned {len(scanned_urls)} unique pages.")
         if findings:
