@@ -1,4 +1,6 @@
 #!/usr/bin/python3
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 # secret_detector.py
 '''
 @haxshadow
@@ -29,6 +31,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class SecretDetector:
     def __init__(self):
+        # Track scan statistics
+        self.stats = {
+            "total_scanned": 0,
+            "total_findings": 0,
+            "start_time": 0,
+            "end_time": 0,
+            "scan_duration": 0
+        }
+        
         # API Keys & Tokens patterns (web-focused)
         self.api_patterns = {
             # Google, Firebase, Maps, Analytics, OAuth
@@ -174,6 +185,43 @@ class SecretDetector:
         ]
         return random.choice(user_agents)
 
+    def calculate_severity(self, finding: Dict[str, str]) -> str:
+        """
+        Calculate the severity of a finding (critical, high, medium, low).
+        """
+        # Default severity is medium
+        severity = "medium"
+        
+        # Critical patterns get critical severity
+        critical_types = [
+            "SSH Private Key", "DSA Private Key", "EC Private Key", "PGP Private Key",
+            "AWS Access Key", "AWS Secret Key", "Google Private Key Block",
+            "Firebase API Key", "Google OAuth Access Token", "Google API Key"
+        ]
+        
+        # High severity types
+        high_types = [
+            "JWT Token", "Bearer Token", "Password/Secret", "Hardcoded Secret", 
+            "Stripe Publishable Key", "Twilio Account SID", "Twilio Auth Token",
+            "GitHub Token", "GitLab Token", "API Key/Token"
+        ]
+        
+        # Low severity types
+        low_types = [
+            "Email", "URL", "IP Address", "UUID", "Google Analytics ID",
+            "Session Cookie", "Set-Cookie"
+        ]
+        
+        # Determine severity based on type
+        if finding.get('priority') == 'critical' or any(t in finding['type'] for t in critical_types):
+            severity = "critical"
+        elif any(t in finding['type'] for t in high_types):
+            severity = "high"
+        elif any(t in finding['type'] for t in low_types):
+            severity = "low"
+            
+        return severity
+    
     def is_likely_false_positive(self, finding: Dict[str, str]) -> bool:
         """
         Check if a finding is likely to be a false positive.
@@ -222,10 +270,17 @@ class SecretDetector:
             r'__pycache__', # Python cache
             r'\b(?:const|let|var|def|function|class)\b', # Code variable/def lines
             r'\b(?:True|False|null|None)\b', # Common code literals
-            r'\b(?:public|private|protected|static|final)\b', # Code keywords
-            r'\b(?:import|from|require|include)\b', # Import/include lines
-            r'\b(?:return|yield|break|continue|pass)\b', # Control flow
-            r'\b(?:if|else|elif|switch|case|for|while|do|try|catch|except|finally)\b', # Control structures
+            r'\b(?:public|private|protected|static|final|abstract|override|virtual|readonly|internal|extern)\b', # Code keywords
+            r'\b(?:import|from|require|include|using|package|namespace|module)\b', # Import/include lines
+            r'\b(?:return|yield|break|continue|pass|throw|raise|assert)\b', # Control flow
+            r'\b(?:if|else|elif|switch|case|for|while|do|try|catch|except|finally|with|async|await)\b', # Control structures
+            r'\b(?:function|def|method|procedure|lambda|=>|->)\b', # Function definitions
+            r'\b(?:string|int|float|double|boolean|bool|char|byte|object|array|list|dict|map|set)\b', # Type declarations
+            r'\b(?:null|nil|undefined|NaN|Infinity)\b', # Special values
+            r'\b(?:this|self|super|base|__init__|constructor)\b', # OOP concepts
+            r'\b(?:addEventListener|querySelector|getElementById|getElementsBy)\b', # DOM manipulation
+            r'\b(?:margin|padding|border|font|color|background|width|height|display|position)\b', # CSS properties
+            r'\b(?:http-equiv|content|charset|viewport|media|rel|type|src|href|alt|title|id|class|name|value)\b', # HTML attributes
         ]
 
         # Additional checks for UUIDs
@@ -245,11 +300,12 @@ class SecretDetector:
 
         return False
 
-    def scan_text(self, text: str, file_path: str = None) -> List[Dict[str, str]]:
+    def scan_text(self, text: str, file_path: str = None, exclusion_patterns: List[str] = None) -> List[Dict[str, str]]:
         """
         Scan text for sensitive information using all patterns.
         Returns a list of dictionaries containing the type of secret and the matched value.
         If file_path is provided, checks for hidden/critical file or directory.
+        If exclusion_patterns is provided, skips findings matching these patterns.
         """
         findings = []
         # Combine all patterns into one dictionary
@@ -267,6 +323,16 @@ class SecretDetector:
             lower_path = file_path.lower()
             if any(x in lower_path for x in critical_keywords):
                 is_critical_file = True
+                
+        # Compile exclusion patterns if provided
+        compiled_exclusions = []
+        if exclusion_patterns:
+            for pattern in exclusion_patterns:
+                try:
+                    compiled_exclusions.append(re.compile(pattern, re.IGNORECASE))
+                except re.error:
+                    print(f"Warning: Invalid exclusion pattern: {pattern}")
+                    
         for secret_type, pattern in all_patterns.items():
             matches = re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE)
             for match in matches:
@@ -279,12 +345,23 @@ class SecretDetector:
                 if is_critical_file:
                     finding['priority'] = 'critical'
                     finding['source'] = file_path
-                if not self.is_likely_false_positive(finding):
+                    
+                # Check if finding matches any exclusion pattern
+                should_exclude = False
+                if compiled_exclusions:
+                    for exclusion in compiled_exclusions:
+                        if exclusion.search(finding['value']):
+                            should_exclude = True
+                            break
+                            
+                if not should_exclude and not self.is_likely_false_positive(finding):
+                    # Add severity rating
+                    finding['severity'] = self.calculate_severity(finding)
                     findings.append(finding)
 
         return findings
 
-    def scan_file(self, file_path: str, verbose: bool = False) -> List[Dict[str, str]]:
+    def scan_file(self, file_path: str, verbose: bool = False, exclusion_patterns: List[str] = None) -> List[Dict[str, str]]:
         """
         Scan a file for sensitive information.
         """
@@ -315,7 +392,7 @@ class SecretDetector:
                                 if response.status_code == 200:
                                     content_type = response.headers.get('content-type', '').lower()
                                     if any(ct in content_type for ct in ['text/', 'application/json', 'application/javascript', 'application/xml']):
-                                        temp_findings = self.scan_text(response.text, file_path=file_path)
+                                        temp_findings = self.scan_text(response.text, exclusion_patterns=["example"], file_path=file_path)
                                         for finding in temp_findings:
                                             finding['url'] = url
                                             findings.append(finding)
@@ -332,7 +409,7 @@ class SecretDetector:
                 # If not a URL file, scan the content directly
                 else:
                     print("\nScanning file content...")
-                    findings = self.scan_text(content, file_path=file_path)
+                    findings = self.scan_text(content, file_path=file_path, exclusion_patterns=exclusion_patterns)
                     if verbose and findings:
                         print("\nFindings while scanning:")
                         print("-" * 40)
@@ -348,7 +425,7 @@ class SecretDetector:
             print(f"\nError scanning file {file_path}: {str(e)}")
             return []
 
-    def scan_directory(self, directory_path: str, verbose: bool = False) -> List[Dict[str, str]]:
+    def scan_directory(self, directory_path: str, verbose: bool = False, exclusion_patterns: List[str] = None, max_workers: int = 10) -> List[Dict[str, str]]:
         """
         Scan all files in a directory (recursively) for secrets.
         """
@@ -357,15 +434,49 @@ class SecretDetector:
         if not directory.is_dir():
             print(f"\nError: {directory_path} is not a directory.")
             return []
+            
+        # Get list of files to scan
+        files_to_scan = []
         for file_path in directory.rglob('*'):
             if file_path.is_file():
+                # Skip binary files and large files for performance
                 try:
-                    file_findings = self.scan_file(str(file_path), verbose=verbose)
-                    for finding in file_findings:
-                        finding['file'] = str(file_path)
+                    if file_path.stat().st_size > 10 * 1024 * 1024:  # Skip files > 10MB
+                        continue
+                    # Check if it's likely a binary file by extension
+                    if file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg',
+                                                  '.mp4', '.webm', '.mp3', '.wav', '.avi', '.mov',
+                                                  '.zip', '.tar', '.gz', '.rar', '.7z',
+                                                  '.woff', '.woff2', '.ttf', '.eot', '.exe', '.dll',
+                                                  '.so', '.dylib', '.bin', '.dat', '.pyc', '.pyo']:
+                        continue
+                    files_to_scan.append(str(file_path))
+                except Exception:
+                    continue
+                    
+        # Scan files in parallel for better performance
+        with tqdm(total=len(files_to_scan), desc="Scanning files", unit="file") as pbar:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                def scan_single_file(file_path):
+                    try:
+                        file_findings = self.scan_file(file_path, verbose=verbose, exclusion_patterns=exclusion_patterns)
+                        for finding in file_findings:
+                            finding['file'] = file_path
+                        pbar.update(1)
+                        return file_findings
+                    except Exception as e:
+                        if verbose:
+                            tqdm.write(f"Error scanning {file_path}: {str(e)}")
+                        pbar.update(1)
+                        return []
+                
+                # Submit all file scanning tasks
+                future_to_file = {executor.submit(scan_single_file, file_path): file_path for file_path in files_to_scan}
+                
+                # Collect results as they complete
+                for future in concurrent.futures.as_completed(future_to_file):
+                    file_findings = future.result()
                     findings.extend(file_findings)
-                except Exception as e:
-                    print(f"Error scanning {file_path}: {str(e)}")
         print(f"\nScanned {directory_path}, found {len(findings)} potential secrets.")
         return findings
 
@@ -419,7 +530,7 @@ class SecretDetector:
             pass
         return subdomains
 
-    def scan_website(self, domain: str, max_pages: int = 100, verbose: bool = False, max_workers: int = 10) -> List[Dict[str, str]]:
+    def scan_website(self, domain: str, max_pages: int = 100, verbose: bool = False, max_workers: int = 10, autosave_callback=None, rate_limit: float = 0.0, exclusion_patterns: List[str] = None) -> List[Dict[str, str]]:
         """
         Scan a website for sensitive information with progress tracking.
         WARNING: This crawler does NOT respect robots.txt, canonical, noindex, or any SEO/crawling restrictions. It will aggressively crawl all discovered URLs and subdomains.
@@ -575,7 +686,7 @@ class SecretDetector:
                     # Process text-based content
                     if any(ct in content_type for ct in ['text/', 'application/json', 'application/javascript', 'application/xml']):
                         content = response.text
-                        temp_findings = self.scan_text(content)
+                        temp_findings = self.scan_text(content, exclusion_patterns=exclusion_patterns)
                         for finding in temp_findings:
                             finding['url'] = normalized_url
                             finding_hash = create_finding_hash(finding)
@@ -636,13 +747,20 @@ class SecretDetector:
                                     queued_urls.add(sub_url)
                         for cookie in cookies_found:
                             findings.append({'type': 'Set-Cookie', 'value': cookie['cookie'], 'url': cookie['url']})
-                        time.sleep(0.05)
+                        # Apply rate limiting if specified
+                        if rate_limit > 0:
+                            time.sleep(rate_limit)
+                        else:
+                            time.sleep(0.05)
+                        # Call autosave callback if provided
+                        if autosave_callback and callable(autosave_callback):
+                            autosave_callback(findings)
         print(f"\nScan completed. Scanned {len(scanned_urls)} unique pages (including subdomains, parallel mode).")
         if findings:
             print(f"\nTotal findings: {len(findings)} (unique)")
         return findings
 
-    def scan_website_crawler(self, domain: str, max_pages: int = 100, max_depth: int = 3, verbose: bool = False) -> List[Dict[str, str]]:
+    def scan_website_crawler(self, domain: str, max_pages: int = 100, max_depth: int = 3, verbose: bool = False, autosave_callback=None, rate_limit: float = 0.0, exclusion_patterns: List[str] = None) -> List[Dict[str, str]]:
         """
         Deep recursive crawler for website secret scanning (respects max_pages and max_depth).
         WARNING: This crawler does NOT respect robots.txt, canonical, noindex, or any SEO/crawling restrictions. It will aggressively crawl all discovered URLs and subdomains.
@@ -816,7 +934,7 @@ class SecretDetector:
                     # Process text-based content
                     if any(ct in content_type for ct in ['text/', 'application/json', 'application/javascript', 'application/xml']):
                         content = response.text
-                        temp_findings = self.scan_text(content)
+                        temp_findings = self.scan_text(content, exclusion_patterns=exclusion_patterns)
                         
                         # Add URL and deduplicate findings
                         for finding in temp_findings:
@@ -891,36 +1009,115 @@ class SecretDetector:
                         urls_to_scan.append((url, current_depth + 1))
                         queued_urls.add(normalized_url)
                         print(f"[queue] Queued: {normalized_url} (depth={current_depth + 1})")
-                time.sleep(0.1)
+                # Apply rate limiting if specified
+                if rate_limit > 0:
+                    time.sleep(rate_limit)
+                else:
+                    time.sleep(0.1)
+                # Call autosave callback if provided
+                if autosave_callback and callable(autosave_callback):
+                    autosave_callback(findings)
 
         print(f"\nCrawler scan completed. Scanned {len(scanned_urls)} unique pages.")
         if findings:
             print(f"\nTotal findings: {len(findings)} (unique)")
         return findings
 
-    def save_findings_to_file(self, findings: List[Dict[str, str]], output_file: str):
-        """Save findings to a text file"""
+    def save_findings_to_file(self, findings: List[Dict[str, str]], output_file: str, format_type="text"):
+        """Save findings to a file (text or JSON format)"""
         try:
-            with open(output_file, 'w') as f:
-                f.write(f"Secret Detection Results\n")
-                f.write(f"=====================\n\n")
-                f.write(f"Total findings: {len(findings)}\n\n")
+            # Calculate scan stats
+            self.stats["total_findings"] = len(findings)
+            self.stats["end_time"] = time.time()
+            self.stats["scan_duration"] = self.stats["end_time"] - self.stats["start_time"]
+            
+            # Add severity to findings if not already present
+            for finding in findings:
+                if 'severity' not in finding:
+                    finding['severity'] = self.calculate_severity(finding)
+            
+            # Save in JSON format
+            if format_type.lower() == "json":
+                output_data = {
+                    "scan_stats": {
+                        "total_findings": len(findings),
+                        "scan_duration_seconds": round(self.stats["scan_duration"], 2),
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    },
+                    "findings": []
+                }
                 
+                # Group findings by URL
                 findings_by_url = {}
                 for finding in findings:
-                    url = finding.get('url', 'Unknown URL')
+                    url = finding.get('url', finding.get('file', 'Unknown Source'))
                     if url not in findings_by_url:
                         findings_by_url[url] = []
-                    findings_by_url[url].append(finding)
+                    # Clean up finding for JSON output
+                    clean_finding = {
+                        "type": finding["type"],
+                        "value": finding["value"],
+                        "severity": finding.get("severity", "medium"),
+                        "position": f"{finding['start']}-{finding['end']}"
+                    }
+                    # Add optional fields if present
+                    if "url" in finding:
+                        clean_finding["url"] = finding["url"]
+                    if "file" in finding:
+                        clean_finding["file"] = finding["file"]
+                    if "commit" in finding:
+                        clean_finding["commit"] = finding["commit"]
+                    if "line" in finding:
+                        clean_finding["line"] = finding["line"]
+                    findings_by_url[url].append(clean_finding)
                 
+                # Add to output data
                 for url, url_findings in findings_by_url.items():
-                    f.write(f"\nURL: {url}\n")
-                    f.write("=" * (len(url) + 5) + "\n")
-                    for finding in url_findings:
-                        f.write(f"Type: {finding['type']}\n")
-                        f.write(f"Value: {finding['value']}\n")
-                        f.write(f"Position: {finding['start']}-{finding['end']}\n")
-                        f.write("-" * 50 + "\n")
+                    output_data["findings"].append({
+                        "source": url,
+                        "findings": url_findings
+                    })
+                
+                with open(output_file, 'w') as f:
+                    json.dump(output_data, f, indent=2)
+            
+            # Save in text format (default)
+            else:
+                with open(output_file, 'w') as f:
+                    f.write(f"Secret Detection Results\n")
+                    f.write(f"=====================\n\n")
+                    f.write(f"Total findings: {len(findings)}\n")
+                    f.write(f"Scan duration: {round(self.stats['scan_duration'], 2)} seconds\n\n")
+                    
+                    findings_by_url = {}
+                    for finding in findings:
+                        url = finding.get('url', finding.get('file', 'Unknown Source'))
+                        if url not in findings_by_url:
+                            findings_by_url[url] = []
+                        findings_by_url[url].append(finding)
+                    
+                    # Count findings by severity
+                    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+                    for finding in findings:
+                        severity = finding.get("severity", "medium")
+                        severity_counts[severity] += 1
+                    
+                    # Write severity summary
+                    f.write(f"Severity summary:\n")
+                    f.write(f"  Critical: {severity_counts['critical']}\n")
+                    f.write(f"  High: {severity_counts['high']}\n")
+                    f.write(f"  Medium: {severity_counts['medium']}\n")
+                    f.write(f"  Low: {severity_counts['low']}\n\n")
+                    
+                    for url, url_findings in findings_by_url.items():
+                        f.write(f"\nSource: {url}\n")
+                        f.write("=" * (len(url) + 8) + "\n")
+                        for finding in url_findings:
+                            severity = finding.get("severity", "medium")
+                            f.write(f"Type: {finding['type']} (Severity: {severity.upper()})\n")
+                            f.write(f"Value: {finding['value']}\n")
+                            f.write(f"Position: {finding['start']}-{finding['end']}\n")
+                            f.write("-" * 50 + "\n")
             
             print(f"\nResults saved to: {output_file}")
         except Exception as e:
@@ -1050,6 +1247,48 @@ This tool can detect various types of secrets including:
         action='store_true',
         help='Show findings in real-time while scanning'
     )
+    output_group.add_argument(
+        '--autosave-interval',
+        type=int,
+        default=60,
+        help='Interval in seconds to automatically save findings (default: 60)'
+    )
+    output_group.add_argument(
+        '--format',
+        choices=['text', 'json'],
+        default='text',
+        help='Output format (text or json)'
+    )
+    output_group.add_argument(
+        '--exclude',
+        action='append',
+        help='Regex pattern to exclude from results (can be used multiple times)'
+    )
+    output_group.add_argument(
+        '--rate-limit',
+        type=float,
+        default=0.0,
+        help='Rate limit for website requests in seconds (e.g., 0.5 for 500ms delay between requests)'
+    )
+    
+    performance_group = parser.add_argument_group('Performance Options')
+    performance_group.add_argument(
+        '--threads',
+        type=int,
+        default=20,
+        help='Maximum number of worker threads for parallel processing (default: 20)'
+    )
+    performance_group.add_argument(
+        '--max-file-size',
+        type=int,
+        default=10,
+        help='Maximum file size in MB to scan (default: 10)'
+    )
+    performance_group.add_argument(
+        '--optimize',
+        action='store_true',
+        help='Enable additional performance optimizations'
+    )
 
     args = parser.parse_args()
 
@@ -1058,11 +1297,67 @@ This tool can detect various types of secrets including:
         sys.exit(1)
 
     detector = SecretDetector()
+    detector.stats["start_time"] = time.time()
     findings = []
+    last_save_time = time.time()
+    output_file = args.output
+    autosave_interval = args.autosave_interval
+    output_format = args.format
+    exclusion_patterns = args.exclude
+    rate_limit = args.rate_limit
+    
+    # Register an exit handler to save findings when the program exits
+    import atexit
+    import signal
+    
+    def exit_handler():
+        if findings and output_file:
+            print("\nExiting. Saving any findings...")
+            detector.save_findings_to_file(findings, output_file, format_type=output_format)
+            print(f"Results saved to: {output_file}")
+    
+    def signal_handler(sig, frame):
+        print("\nReceived interrupt signal. Saving findings before exit...")
+        if findings and output_file:
+            detector.save_findings_to_file(findings, output_file, format_type=output_format)
+            print(f"Results saved to: {output_file}")
+        sys.exit(0)
+    
+    # Register the handlers
+    atexit.register(exit_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Function to save findings periodically and on exit
+    def save_findings():
+        if findings and output_file:
+            print(f"\nSaving {len(findings)} findings to {output_file}...")
+            detector.save_findings_to_file(findings, output_file, format_type=output_format)
+            print(f"Results saved to: {output_file}")
+    
+    # Function to check if it's time to autosave
+    def check_autosave():
+        nonlocal last_save_time
+        if output_file and findings and (time.time() - last_save_time) > autosave_interval:
+            print(f"\nAuto-saving {len(findings)} findings...")
+            detector.save_findings_to_file(findings, output_file, format_type=output_format)
+            last_save_time = time.time()
 
     try:
         if args.scan_dir:
-            findings = detector.scan_directory(args.scan_dir, verbose=True)
+            # Measure scan time
+            scan_start = time.time()
+            print(f"\nStarting directory scan at {time.strftime('%H:%M:%S')}")
+            
+            findings = detector.scan_directory(
+                args.scan_dir, 
+                verbose=True, 
+                exclusion_patterns=exclusion_patterns,
+                max_workers=args.threads if hasattr(args, 'threads') else args.max_workers
+            )
+            
+            scan_duration = time.time() - scan_start
+            print(f"\nScan completed in {round(scan_duration, 2)} seconds")
+            print(f"False positives filtered: {detector.stats.get('false_positives_filtered', 0)}")
         elif args.git_history:
             findings = detector.scan_git_history(args.git_history, verbose=True)
         elif args.file:
@@ -1081,36 +1376,80 @@ This tool can detect various types of secrets including:
                         domain,
                         max_pages=args.max_pages,
                         verbose=args.verbose,
-                        max_workers=args.max_workers
+                        max_workers=args.threads if hasattr(args, 'threads') else args.max_workers
                     )
                     for finding in domain_findings:
                         if 'url' not in finding:
                             finding['url'] = domain
                     all_findings.extend(domain_findings)
+                    # Check if it's time to autosave
+                    check_autosave()
                 findings = all_findings
             except Exception as e:
                 print(f"\nError reading domain list file: {str(e)}")
+                save_findings()  # Save any findings we have before exiting
                 sys.exit(1)
         elif args.domain:
             print(f"\nStarting scan of website: {args.domain}")
-            if args.crawler:
-                findings = detector.scan_website_crawler(
-                    args.domain,
-                    max_pages=args.max_pages,
-                    max_depth=args.depth,
-                    verbose=args.verbose
-                )
-            else:
-                findings = detector.scan_website(
-                    args.domain,
-                    max_pages=args.max_pages,
-                    verbose=args.verbose,
-                    max_workers=args.max_workers
-                )
+            # Create a threading event to signal when to save findings
+            save_event = threading.Event()
+            
+            # Create a thread to periodically save findings
+            def autosave_thread():
+                nonlocal last_save_time
+                while not save_event.is_set():
+                    time.sleep(5)  # Check every 5 seconds
+                    if output_file and findings:
+                        current_time = time.time()
+                        if (current_time - last_save_time) > min(autosave_interval, 30):  # Save at least every 30 seconds
+                            print(f"\nAuto-saving {len(findings)} findings...")
+                            try:
+                                detector.save_findings_to_file(findings, output_file, format_type=output_format)
+                                print(f"Results saved to: {output_file}")
+                                last_save_time = current_time
+                            except Exception as e:
+                                print(f"Error during autosave: {str(e)}")
+            
+            # Start the autosave thread if output file is specified
+            if output_file:
+                save_thread = threading.Thread(target=autosave_thread)
+                save_thread.daemon = True
+                save_thread.start()
+            
+            try:
+                if args.crawler:
+                    findings = detector.scan_website_crawler(
+                        args.domain,
+                        max_pages=args.max_pages,
+                        max_depth=args.depth,
+                        verbose=args.verbose,
+                        rate_limit=rate_limit,
+                        exclusion_patterns=exclusion_patterns
+                    )
+                else:
+                    findings = detector.scan_website(
+                        args.domain,
+                        max_pages=args.max_pages,
+                        verbose=args.verbose,
+                        max_workers=args.threads if hasattr(args, 'threads') else args.max_workers,
+                        rate_limit=rate_limit,
+                        exclusion_patterns=exclusion_patterns
+                    )
+                
+                # Stop the autosave thread
+                if output_file:
+                    save_event.set()
+            except KeyboardInterrupt:
+                print("\nScan interrupted by user.")
+                # Stop the autosave thread
+                if output_file:
+                    save_event.set()
+                save_findings()  # Save findings before exiting
+                sys.exit(0)
         
         if findings:
-            if args.output:
-                detector.save_findings_to_file(findings, args.output)
+            if output_file:
+                save_findings()
             elif not args.verbose:
                 findings_by_url = {}
                 for finding in findings:
@@ -1134,9 +1473,11 @@ This tool can detect various types of secrets including:
 
     except KeyboardInterrupt:
         print("\nScan interrupted by user.")
+        save_findings()  # Save findings before exiting
         sys.exit(0)
     except Exception as e:
         print(f"\nAn error occurred: {str(e)}")
+        save_findings()  # Save findings before exiting
         sys.exit(1)
 
 if __name__ == "__main__":
