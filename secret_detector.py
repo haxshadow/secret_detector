@@ -1,6 +1,4 @@
 #!/usr/bin/python3
-# -*- coding: utf-8 -*-
-#!/usr/bin/env python3
 # secret_detector.py
 '''
 @haxshadow
@@ -24,6 +22,8 @@ import warnings
 import random
 import subprocess
 import json
+import atexit
+import signal
 
 
 # Suppress SSL warnings
@@ -158,6 +158,181 @@ class SecretDetector:
             'Google Private Key Block': r'"private_key":\s*"-----BEGIN PRIVATE KEY-----[\\s\\S]+?-----END PRIVATE KEY-----"',
         }
 
+        # Extra patterns
+        self.extra_patterns = {
+            # API/Token/Secret
+            'Facebook Access Token': r'EAACEdEose0cBA[0-9A-Za-z]+',
+            'Facebook App Secret': r'(?i)facebook(.{0,20})?(secret|private)?(.{0,20})?([0-9a-zA-Z\/+]{32,})',
+            'Twitter API Key': r'(?i)twitter(.{0,20})?(key|secret|token)[=:][\'\"]?([A-Za-z0-9]{35,44})[\'\"]?',
+            'Twitter Bearer Token': r'AAAAAAAAAAAAAAAAAAAAA[A-Za-z0-9]{35,}',
+            'LinkedIn Client ID': r'86[a-zA-Z0-9]{12,}',
+            'LinkedIn Secret': r'(?i)linkedin(.{0,20})?(secret|private)?(.{0,20})?([0-9a-zA-Z\/+]{32,})',
+            'Discord Token': r'[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}',
+            'Discord Webhook': r'https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+',
+            'Telegram Bot Token': r'\d{9}:[a-zA-Z0-9_-]{35}',
+            'Shopify Access Token': r'shpat_[a-fA-F0-9]{32}',
+            'Stripe Secret Key': r'sk_live_[0-9a-zA-Z]{24}',
+            'Mailgun API Key': r'key-[0-9a-zA-Z]{32}',
+            'SendGrid API Key': r'SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}',
+            'Algolia API Key': r'(?i)algolia(.{0,20})?(key|token)[=:][\'\"]?([A-Za-z0-9]{32})[\'\"]?',
+            # Cloud
+            'Cloudinary API Key': r'CLOUDINARY_URL=cloudinary://[0-9]{15}:[A-Za-z0-9_-]{20,40}@[a-z0-9]+',
+            'Firebase DB URL': r'https://[a-z0-9-]+\.firebaseio\.com',
+            'Heroku Postgres URL': r'postgres://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            # Database
+            'Amazon RDS Endpoint': r'[a-z0-9-]+\.rds\.amazonaws\.com',
+            'Mongo Atlas Endpoint': r'cluster[0-9]+\.[a-z0-9]+\.mongodb\.net',
+            # SSH/Private Keys
+            'OpenSSH Ed25519 Key': r'-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]+?-----END OPENSSH PRIVATE KEY-----',
+            'PuTTY Private Key': r'PuTTY-User-Key-File-2: [A-Za-z0-9]+',
+            # OAuth/JWT
+            'OAuth Refresh Token': r'(?i)refresh_token[=:][\'\"]?([A-Za-z0-9\-_.=]{20,})[\'\"]?',
+            'JWT Auth Token': r'eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+',
+            'OAuth Refresh Token': r'(?i)refresh_token[=:][\'\"]?([A-Za-z0-9\-_.=]{20,})[\'\"]?',
+            'Cookie Value': r'(?:^|; )([A-Za-z0-9_]+)=([A-Za-z0-9\-_.]{10,})',
+            'Session ID': r'(?:sessionid|sessid|sid|phpsessid|jsessionid)[=:][\'\"]?([A-Za-z0-9\-_.]{10,})[\'\"]?',
+            'Wasabi Bucket': r'https?://s3\.wasabisys\.com/[a-z0-9\-_/\.]+',
+            'Backblaze B2 Bucket': r'b2://[a-z0-9\-_/\.]+',
+            'Alibaba OSS Bucket': r'https?://[a-z0-9\-]+\.oss-[a-z0-9\-]+\.aliyuncs\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'IBM COS Bucket': r'https?://[a-z0-9\-]+\.s3\.[a-z0-9\-]+\.cloud-object-storage\.appdomain\.cloud/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Yandex Object Storage': r'https?://[a-z0-9\-]+\.storage\.yandexcloud\.net/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Oracle Cloud Bucket': r'https?://objectstorage\.[a-z0-9\-]+\.[a-z0-9\-]+\.oraclecloud\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Linode Object Storage': r'https?://[a-z0-9\-]+\.linodeobjects\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Exoscale Bucket': r'https?://[a-z0-9\-]+\.sos-ch-dk-2\.exo.io/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'OpenStack Swift': r'https?://[a-z0-9\-]+\.swift\.openstack\.org/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Scaleway Bucket': r'https?://s3\.fr-par\.scw\.cloud/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'DreamObjects Bucket': r'https?://objects\.dreamhost\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Vultr Object Storage': r'https?://[a-z0-9\-]+\.ewr1\.vultrobjects\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'UpCloud Object Storage': r'https?://[a-z0-9\-]+\.fi-hel1\.upcloudobjects\.com/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'OVH Cloud Bucket': r'https?://[a-z0-9\-]+\.s3\.gra\.io\.cloud\.ovh\.net/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+            'Hetzner Storage Box': r'https?://[a-z0-9\-]+\.your-storagebox\.de/[a-zA-Z0-9!_\-\.\*\'\(\)]+',
+        }
+
+        # DATABASE 
+        self.database_connections = {
+            'Cassandra Connection String': r'cassandra://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            'Couchbase Connection String': r'couchbase://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            'DynamoDB Endpoint': r'https?://dynamodb\.[a-z0-9-]+\.amazonaws\.com',
+            'Elasticsearch Endpoint': r'https?://[a-z0-9-]+\.es\.[a-z0-9-]+\.amazonaws\.com',
+            'MariaDB Connection String': r'mariadb://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            'Oracle DB Connection String': r'oracle://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            'SQLite File': r'sqlite:///[a-zA-Z0-9/_\-\.]+\.db',
+            'Snowflake Connection String': r'snowflake://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9]+',
+            'Firebase Secret': r'AAAA[a-zA-Z0-9_-]{7}:[a-zA-Z0-9_-]{140}',
+            'CouchDB URL': r'https?://[a-zA-Z0-9\-]+:[^@]+@[a-zA-Z0-9\.-]+:[0-9]+/[a-zA-Z0-9_-]+',
+            'Neo4j Connection String': r'neo4j://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+',
+            'InfluxDB Connection String': r'influxdb://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+',
+            'ClickHouse Connection String': r'clickhouse://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+',
+            'TimescaleDB Connection String': r'timescaledb://[^:]+:[^@]+@[a-zA-Z0-9.-]+:[0-9]+',
+        }
+
+        # EXTENDED CLOUD CONFIG/SECRET
+        self.cloud_config = {
+            'GCP Service Account': r'"type":\s*"service_account"',
+            'Azure Storage Key': r'AccountKey=[A-Za-z0-9+/=]{88}',
+            'DigitalOcean API Key': r'do[0-9a-f]{62}',
+            'IBM Cloud API Key': r'ibmcloudapikey[0-9a-zA-Z]{32,}',
+            'Yandex API Key': r'AQVN[a-zA-Z0-9_-]{35,}',
+        }
+
+        # EXTENDED FINANCIAL
+        self.financial = {
+            'Discover Card Number': r'6(?:011|5[0-9]{2})[0-9]{12}',
+            'Maestro Card Number': r'(?:5[0678]\d{2}|6304|6390|67\d{2})\d{8,15}',
+            'JCB Card Number': r'(?:2131|1800|35\d{3})\d{11}',
+            'Diners Club Card Number': r'3(?:0[0-5]|[68][0-9])\d{11}',
+            'SWIFT/BIC': r'\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b',
+        }
+
+        # EXTENDED PERSONAL/ID
+        self.personal_id = {
+            'TC Kimlik No': r'\b[1-9][0-9]{10}\b',
+            'SSN': r'\b\d{3}-\d{2}-\d{4}\b',
+            'Passport Number': r'\b[A-Z0-9]{6,9}\b',
+            'Driver License': r'\b[A-Z0-9]{5,15}\b',
+            'Phone Number': r'\b(?:\+\d{1,3}[- ]?)?(?:\(\d{1,4}\)[- ]?)?\d{1,4}[- ]?\d{1,4}[- ]?\d{1,9}\b',
+            'Address': r'\d{1,5}\s+([A-Za-z0-9\.,\-\s]+)',
+            'Birth Date': r'\b\d{4}[-/]\d{2}[-/]\d{2}\b',
+        }
+
+        # EXTENDED PASSWORD/SECRET FORMAT
+        self.password_secret = {
+            'bcrypt Hash': r'\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53}',
+            'scrypt Hash': r'\$scrypt\$N=[0-9]+,r=[0-9]+,p=[0-9]+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+',
+            'argon2 Hash': r'\$argon2(id|i|d)\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+',
+            'htpasswd Hash': r':[A-Za-z0-9./$]{13,}',
+            'crypt Hash': r'\$[0-9a-zA-Z]{1,2}\$[A-Za-z0-9./]{8,}',
+            'Base64 String': r'([A-Za-z0-9+/]{40,}={0,2})',
+            'Hex String': r'\b[0-9a-fA-F]{32,}\b',
+        }
+
+        # EXTENDED CONFIG/ENV FILES
+        self.config_env = {
+            '.npmrc Auth Token': r'_auth=([A-Za-z0-9+/=]{32,})',
+            '.pypirc Password': r'password\s*=\s*([A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:\'\",.<>/?]+)',
+            '.dockerconfigjson Auth': r'"auths"\s*:\s*\{',
+            '.dockercfg Auth': r'\"auth\":\s*\"[A-Za-z0-9+/=]+\"',
+            '.aws Credentials': r'\[default\]\s*aws_access_key_id\s*=\s*AKIA[0-9A-Z]{16}',
+            '.azure Credentials': r'AccountKey=[A-Za-z0-9+/=]{88}',
+            '.gcloud Credentials': r'"private_key_id":\s*"[a-f0-9]{40}"',
+            '.netrc Machine': r'machine\s+[a-zA-Z0-9.\-]+\s+login\s+[a-zA-Z0-9._-]+\s+password\s+[A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:\'\",.<>/?]+',
+            '.pgpass': r'^[^:]+:[0-9]+:[^:]+:[^:]+:[^\s]+$',
+            '.my.cnf Password': r'password\s*=\s*[^\s]+',
+            '.s3cfg Access Key': r'access_key\s*=\s*AKIA[0-9A-Z]{16}',
+            '.boto Credentials': r'aws_access_key_id\s*=\s*AKIA[0-9A-Z]{16}',
+            '.git-credentials': r'https?://[^:]+:[^@]+@[a-zA-Z0-9.-]+',
+            '.gitconfig User': r'name\s*=\s*[^\n]+',
+            '.ssh Config Host': r'Host\s+[^\n]+',
+            '.bash_history Command': r'\b(passwd|ssh|mysql|psql|su|sudo|ftp|scp|curl|wget|openssl|gpg|docker|kubectl|aws|gcloud|az)\b',
+            '.zsh_history Command': r'\b(passwd|ssh|mysql|psql|su|sudo|ftp|scp|curl|wget|openssl|gpg|docker|kubectl|aws|gcloud|az)\b',
+        }
+
+        # Pre-compile all regex patterns for speed
+        self.compiled_patterns = {}
+        for group in [self.critical_patterns, self.api_patterns, self.auth_patterns, self.secret_patterns, self.identifier_patterns, self.extra_patterns, self.cloud_buckets, self.database_connections, self.cloud_config, self.financial, self.personal_id, self.password_secret, self.config_env]:
+            for k, v in group.items():
+                try:
+                    self.compiled_patterns[k] = re.compile(v, re.MULTILINE | re.IGNORECASE)
+                except Exception:
+                    pass
+
+        # Pre-compile comprehensive false positive patterns for is_likely_false_positive
+        self.false_positive_patterns = [
+            # URLs and common web assets (ALWAYS filtered)
+            r'^https?://', r'/assets/', r'/images/', r'/css/', r'/js/', r'/static/', r'/public/',
+            r'wp-content', r'wp-includes',
+            # Obvious media/font/binary extensions (ALWAYS filtered)
+            r'\.jpg$', r'\.jpeg$', r'\.png$', r'\.gif$', r'\.ico$', r'\.svg$', r'\.mp3$', r'\.mp4$', r'\.woff$', r'\.woff2$', r'\.ttf$', r'\.eot$', r'\.zip$', r'\.tar$', r'\.gz$', r'\.rar$', r'\.7z$', r'\.exe$', r'\.dll$', r'\.bin$', r'\.so$', r'\.dylib$', r'\.apk$', r'\.ipa$', r'\.deb$', r'\.rpm$',
+            # The rest (filtered only for non-critical files)
+            r'\.css$', r'\.js$', r'\.json$', r'\.xml$', r'\.csv$', r'\.md$', r'\.txt$', r'\.pdf$', r'\.docx$', r'\.xlsx$', r'\.pptx$',
+            r'\.bak$', r'\.tmp$', r'\.swp$', r'\.old$', r'\.sample$', r'\.test$', r'\.spec$', r'\.example$', r'\.template$', r'\.dist$', r'\.crt$', r'\.cer$', r'\.pem$', r'\.pub$', r'\.key$', r'\.csr$', r'\.pfx$', r'\.p12$', r'\.der$', r'\.jks$', r'\.keystore$', r'\.asc$', r'\.gpg$', r'\.pgp$',
+            r'node_modules/',
+            # Common code keywords and blocks
+            r'\bfunction\b', r'\bclass\b', r'\bdef\b', r'\bimport\b', r'\bfrom\b', r'\breturn\b', r'\{.*\}', r'\[.*\]', r'\(.*\)', r'console\.log', r'System\.out', r'print\(', r'echo ',
+            # Dummy/sample/test keys
+            r'test', r'dummy', r'sample', r'example', r'your_', r'changeme', r'notasecret', r'12345', r'abcdef',
+            # Common config/system paths
+            r'/etc/', r'/usr/', r'/var/', r'/opt/', r'/home/', r'/tmp/', r'/dev/',
+            # Public key block
+            r'^ssh-rsa ', r'^ssh-ed25519 ', r'^ecdsa-sha2-nistp256 ',
+            # Common data formats
+            r'\b[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}\b',  # email
+            r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',        # IPv4
+            r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', # UUID
+            r'\b([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\b', # MAC
+            # Hashes and encodings
+            r'\b[a-f0-9]{32}\b',         # md5
+            r'\b[a-f0-9]{40}\b',         # sha1
+            r'\b[a-f0-9]{64}\b',         # sha256
+            r'\b[a-f0-9]{128}\b',        # sha512
+            r'^[A-Za-z0-9+/=]{40,}$',      # base64/hex long string
+        ]
+        # Partition patterns: always filter vs. only non-critical
+        self.always_fp_patterns = self.false_positive_patterns[:16]  # URLs, media, font, binary, wp-content, etc.
+        self.noncritical_fp_patterns = self.false_positive_patterns[16:]
+        self.compiled_always_fp_patterns = [re.compile(p, re.IGNORECASE) for p in self.always_fp_patterns]
+        self.compiled_noncritical_fp_patterns = [re.compile(p, re.IGNORECASE) for p in self.noncritical_fp_patterns]
+
     def get_random_user_agent(self):
         """
         Returns a random modern User-Agent string for browsers, bots, and mobile devices.
@@ -224,80 +399,64 @@ class SecretDetector:
     
     def is_likely_false_positive(self, finding: Dict[str, str]) -> bool:
         """
-        Check if a finding is likely to be a false positive.
+        Less aggressive false positive filtering for critical files/fields.
+        Also applies special logic for certain types (UUID, hash, email, IP, MAC, etc).
         """
         value = finding['value'].lower()
-        
-        # False positive patterns (expanded with code-specific features)
-        false_positive_patterns = [
-            r'^https?://',  # URLs
-            r'\.css$',      # CSS files
-            r'\.js$',       # JavaScript files
-            r'\.png$',      # Image files
-            r'\.jpg$',
-            r'\.jpeg$',
-            r'\.gif$',
-            r'\.ico$',
-            r'\.svg$',
-            r'/assets/',    # Common asset paths
-            r'/images/',
-            r'/css/',
-            r'/js/',
-            r'/static/',
-            r'/public/',
-            r'wp-content',  # WordPress paths
-            r'wp-includes',
-            r'themes/',
-            r'plugins/',
-            r'vendor/',     # Common package paths
-            r'node_modules/',
-            r'\.min\.',    # Minified files
-            r'\.map$',     # Source maps
-            r'\.lock$',    # Lock files
-            r'\.md$',      # Markdown/docs
-            r'\.txt$',     # Text files
-            r'\.json$',    # JSON files
-            r'\.xml$',     # XML files
-            r'\.yml$',     # YAML files
-            r'\.toml$',    # TOML files
-            r'\.ini$',     # INI files
-            r'\.cfg$',     # Config files
-            r'\.env$',     # Env files
-            r'example',     # Example/template files
-            r'test/',       # Test folders
-            r'fixture/',    # Fixture folders
-            r'sample/',     # Sample folders
-            r'__pycache__', # Python cache
-            r'\b(?:const|let|var|def|function|class)\b', # Code variable/def lines
-            r'\b(?:True|False|null|None)\b', # Common code literals
-            r'\b(?:public|private|protected|static|final|abstract|override|virtual|readonly|internal|extern)\b', # Code keywords
-            r'\b(?:import|from|require|include|using|package|namespace|module)\b', # Import/include lines
-            r'\b(?:return|yield|break|continue|pass|throw|raise|assert)\b', # Control flow
-            r'\b(?:if|else|elif|switch|case|for|while|do|try|catch|except|finally|with|async|await)\b', # Control structures
-            r'\b(?:function|def|method|procedure|lambda|=>|->)\b', # Function definitions
-            r'\b(?:string|int|float|double|boolean|bool|char|byte|object|array|list|dict|map|set)\b', # Type declarations
-            r'\b(?:null|nil|undefined|NaN|Infinity)\b', # Special values
-            r'\b(?:this|self|super|base|__init__|constructor)\b', # OOP concepts
-            r'\b(?:addEventListener|querySelector|getElementById|getElementsBy)\b', # DOM manipulation
-            r'\b(?:margin|padding|border|font|color|background|width|height|display|position)\b', # CSS properties
-            r'\b(?:http-equiv|content|charset|viewport|media|rel|type|src|href|alt|title|id|class|name|value)\b', # HTML attributes
-        ]
-
-        # Additional checks for UUIDs
-        if finding['type'] == 'UUID':
-            # Check if UUID is part of a file path or URL
+        ftype = finding.get('type', '').lower()
+        is_critical = finding.get('priority') == 'critical'
+        # Always filter these patterns
+        for pattern in getattr(self, 'compiled_always_fp_patterns', []):
+            if pattern.search(value):
+                return True
+        # Only filter these if not critical
+        if not is_critical:
+            for pattern in getattr(self, 'compiled_noncritical_fp_patterns', []):
+                if pattern.search(value):
+                    return True
+            # Heuristic: very short or very long values
+            if len(value) < 8 or len(value) > 256:
+                return True
+            # Heuristic: common dummy/test types
+            dummy_types = ['test', 'dummy', 'sample', 'example', 'changeme', 'notasecret']
+            if any(dt in value for dt in dummy_types):
+                return True
+            # Heuristic: very common types
+            common_types = ['url', 'path', 'filename', 'file', 'dir', 'directory', 'domain', 'email', 'ip', 'uuid', 'mac', 'hash']
+            if any(ct in ftype for ct in common_types):
+                return True
+        # UUID: filter if part of a file path or URL, or surrounded by typical id field names
+        if finding.get('type', '').upper() == 'UUID':
             if '/' in value or '.' in value:
                 return True
             # Check if UUID is surrounded by typical ID field names
-            surrounding_text = value[max(0, finding['start']-20):finding['end']+20]
-            if any(id_field in surrounding_text.lower() for id_field in ['style', 'class', 'div', 'span', 'image', 'img', 'src']):
+            # (Assume finding has 'start' and 'end' for context, else skip)
+            if 'start' in finding and 'end' in finding and 'source' in finding:
+                try:
+                    with open(finding['source'], 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        surrounding = content[max(0, finding['start']-20):finding['end']+20].lower()
+                        id_fields = ['style', 'class', 'div', 'span', 'image', 'img', 'src', 'id', 'data-id']
+                        if any(idf in surrounding for idf in id_fields):
+                            return True
+                except Exception:
+                    pass
+        # Hashes: filter if type is hash and value is in a known hash field or path
+        if ftype in ['md5', 'sha1', 'sha256', 'sha512', 'hash']:
+            if '/' in value or '.' in value:
                 return True
-
-        # Check if the value matches any false positive pattern
-        for pattern in false_positive_patterns:
-            if re.search(pattern, value):
+        # Email: filter if value is part of a path or url
+        if ftype == 'email':
+            if '/' in value or ':' in value:
                 return True
-
+        # IP: filter if value is in a url or path
+        if ftype == 'ip':
+            if '/' in value or ':' in value:
+                return True
+        # MAC: filter if value is in a url or path
+        if ftype == 'mac':
+            if '/' in value or ':' in value:
+                return True
         return False
 
     def scan_text(self, text: str, file_path: str = None, exclusion_patterns: List[str] = None) -> List[Dict[str, str]]:
@@ -309,13 +468,9 @@ class SecretDetector:
         """
         findings = []
         # Combine all patterns into one dictionary
-        all_patterns = {
-            **self.critical_patterns,
-            **self.api_patterns,
-            **self.auth_patterns,
-            **self.secret_patterns,
-            **self.identifier_patterns
-        }
+        all_patterns = { **self.critical_patterns, **self.api_patterns, **self.auth_patterns, **self.secret_patterns, **self.identifier_patterns, **self.extra_patterns, **self.cloud_buckets, **self.database_connections, **self.cloud_config, **self.financial, **self.personal_id, **self.password_secret, **self.config_env }
+        # Use pre-compiled patterns for speed
+        compiled_patterns = getattr(self, 'compiled_patterns', None)
         # Hidden/critical file or directory keywords
         critical_keywords = ['.env', '.aws', '.ssh', '.git', '.docker', '.config', '.credentials', '.vault', '.secrets', 'id_rsa', 'id_dsa', 'id_ed25519', 'private_key', 'service-account', 'firebase.json', 'settings.json', 'local.settings.json']
         is_critical_file = False
@@ -334,7 +489,8 @@ class SecretDetector:
                     print(f"Warning: Invalid exclusion pattern: {pattern}")
                     
         for secret_type, pattern in all_patterns.items():
-            matches = re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE)
+            regex = compiled_patterns[secret_type] if compiled_patterns and secret_type in compiled_patterns else re.compile(pattern, re.MULTILINE | re.IGNORECASE)
+            matches = regex.finditer(text)
             for match in matches:
                 finding = {
                     'type': secret_type,
@@ -577,39 +733,49 @@ class SecretDetector:
                 if not parsed.scheme or not parsed.netloc:
                     print(f"[is_valid_url] Rejected (no scheme/netloc): {url}")
                     return False
-                # Accept subdomains
+                
+                # Domain matching
                 site_domain = base_domain
-                url_domain = parsed.netloc.lower().split(':')[0]
+                url_domain = parsed.netloc.lower().split(':')[0]  # Remove port if present
+                
+                # Check domain match including subdomains
                 domain_match = (
                     url_domain == site_domain or
                     url_domain.endswith(f".{site_domain}") or
                     site_domain in url_domain
                 )
+                
                 # Only exclude binary and font files
                 excluded_extensions = {
                     '.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg',
                     '.mp4', '.webm', '.mp3', '.wav', '.avi', '.mov',
                     '.zip', '.tar', '.gz', '.rar', '.7z',
-                    '.woff', '.woff2', '.ttf', '.eot'
+                    '.woff', '.woff2', '.ttf', '.eot', '.exe', '.dll',
+                    '.so', '.dylib', '.bin', '.dat', '.pyc', '.pyo'
                 }
+                
                 path = parsed.path.lower()
                 for ext in excluded_extensions:
                     if path.endswith(ext):
+                        print(f"[is_valid_url] Rejected (excluded extension {ext}): {url}")
                         return False
                 valid = (
                     domain_match and
                     parsed.scheme in ['http', 'https'] and
                     not any(path.endswith(ext) for ext in excluded_extensions)
                 )
+                if valid:
+                    print(f"[is_valid_url] Accepted: {url}")
                 return valid
-            except Exception as err:
-                print(f"[is_valid_url] Exception for {url}: {err}")
+            except Exception as e:
+                print(f"[is_valid_url] Exception for {url}: {e}")
                 return False
-        def extract_urls_and_subdomains(url: str, html_content: str) -> Tuple[Set[str], Set[str]]:
+
+        def extract_urls(url: str, html_content: str) -> set:
             urls = set()
-            subdomains = set()
             try:
                 soup = BeautifulSoup(html_content, 'html.parser')
+                
                 # Extract URLs
                 for tag in soup.find_all(['a', 'link', 'script', 'img', 'form', 'iframe']):
                     for attr in ['href', 'src', 'action', 'data-url']:
@@ -618,15 +784,14 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, link)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls] Found: {link} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                                    # Subdomain detection
-                                    parsed = urlparse(normalized_url)
-                                    netloc = parsed.netloc.lower()
-                                    if netloc.endswith(base_domain) and netloc != base_domain:
-                                        subdomains.add(netloc)
-                            except:
+                                    print(f"[extract_urls] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls] Exception for {link}: {e}")
                                 continue
+                
                 # Extract URLs from onclick attributes
                 elements_with_onclick = soup.find_all(attrs={"onclick": True})
                 for element in elements_with_onclick:
@@ -636,10 +801,14 @@ class SecretDetector:
                         try:
                             absolute_url = urljoin(url, match[0])
                             normalized_url = normalize_url(absolute_url)
+                            print(f"[extract_urls][onclick] Found: {match[0]} -> {normalized_url}")
                             if is_valid_url(normalized_url):
                                 urls.add(normalized_url)
-                        except Exception:
+                                print(f"[extract_urls][onclick] Added: {normalized_url}")
+                        except Exception as e:
+                            print(f"[extract_urls][onclick] Exception for {match[0]}: {e}")
                             continue
+                
                 # Extract URLs from inline JavaScript
                 for script in soup.find_all('script'):
                     if script.string:
@@ -648,10 +817,14 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match[0])
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][script] Found: {match[0]} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except Exception:
+                                    print(f"[extract_urls][script] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][script] Exception for {match[0]}: {e}")
                                 continue
+                
                 # Extract URLs from CSS
                 for style in soup.find_all('style'):
                     if style.string:
@@ -660,33 +833,33 @@ class SecretDetector:
                             try:
                                 absolute_url = urljoin(url, match)
                                 normalized_url = normalize_url(absolute_url)
+                                print(f"[extract_urls][style] Found: {match} -> {normalized_url}")
                                 if is_valid_url(normalized_url):
                                     urls.add(normalized_url)
-                            except Exception:
+                                    print(f"[extract_urls][style] Added: {normalized_url}")
+                            except Exception as e:
+                                print(f"[extract_urls][style] Exception for {match}: {e}")
                                 continue
-                # Subdomains from raw HTML
-                subdomains |= self.extract_subdomains(url, html_content, base_domain)
             except Exception:
                 pass
-            return urls, subdomains
+            return urls
+
         def scan_single_url(url):
             page_findings = []
             new_urls = set()
-            new_subdomains = set()
-            cookies_found = []
             normalized_url = normalize_url(url)
+            
             try:
                 response = session.get(url, timeout=15, allow_redirects=True)
                 if response.status_code == 200:
                     content_type = response.headers.get('content-type', '').lower()
-                    # Collect cookies
-                    if 'set-cookie' in response.headers:
-                        cookies = response.headers.get('set-cookie')
-                        cookies_found.append({'url': normalized_url, 'cookie': cookies})
+                    
                     # Process text-based content
                     if any(ct in content_type for ct in ['text/', 'application/json', 'application/javascript', 'application/xml']):
                         content = response.text
-                        temp_findings = self.scan_text(content, exclusion_patterns=exclusion_patterns)
+                        temp_findings = self.scan_text(content, exclusion_patterns=["example"], file_path=file_path)
+                        
+                        # Add URL and deduplicate findings
                         for finding in temp_findings:
                             finding['url'] = normalized_url
                             finding_hash = create_finding_hash(finding)
@@ -700,12 +873,16 @@ class SecretDetector:
                                         tqdm.write(f"Value: {finding['value']}")
                                         tqdm.write(f"Position: {finding['start']}-{finding['end']}")
                                         tqdm.write("-" * 40)
-                        # Extract new URLs and subdomains from HTML content
+                        
+                        # Extract new URLs from HTML content
                         if 'text/html' in content_type:
-                            new_urls, new_subdomains = extract_urls_and_subdomains(url, content)
-            except Exception:
-                pass
-            return url, page_findings, new_urls, new_subdomains, cookies_found
+                            new_urls = extract_urls(url, content)
+                
+            except Exception as e:
+                tqdm.write(f"\nError scanning {url}: {str(e)}")
+            
+            return url, page_findings, new_urls
+
         print(f"\nInitializing scan of {domain} (with subdomain support, parallel mode {max_workers} threads)...")
         start_urls = [
             f"https://{domain}",
@@ -728,7 +905,7 @@ class SecretDetector:
                         break
                     future_to_url = {executor.submit(scan_single_url, url): url for url in batch}
                     for future in concurrent.futures.as_completed(future_to_url):
-                        url, page_findings, new_urls, new_subdomains, cookies_found = future.result()
+                        url, page_findings, new_urls = future.result()
                         normalized_current = normalize_url(url)
                         findings.extend(page_findings)
                         scanned_urls.add(normalized_current)
@@ -738,15 +915,6 @@ class SecretDetector:
                             if normalized_url not in scanned_urls and normalized_url not in queued_urls:
                                 urls_to_scan.append(normalized_url)
                                 queued_urls.add(normalized_url)
-                        for subdomain in new_subdomains:
-                            if subdomain not in discovered_subdomains and subdomain != base_domain:
-                                discovered_subdomains.add(subdomain)
-                                sub_url = f"https://{subdomain}"
-                                if sub_url not in scanned_urls and sub_url not in queued_urls:
-                                    urls_to_scan.append(sub_url)
-                                    queued_urls.add(sub_url)
-                        for cookie in cookies_found:
-                            findings.append({'type': 'Set-Cookie', 'value': cookie['cookie'], 'url': cookie['url']})
                         # Apply rate limiting if specified
                         if rate_limit > 0:
                             time.sleep(rate_limit)
@@ -845,81 +1013,6 @@ class SecretDetector:
             except Exception as e:
                 print(f"[is_valid_url] Exception for {url}: {e}")
                 return False
-
-        def extract_urls(url: str, html_content: str) -> set:
-            """Extract all URLs from HTML content"""
-            urls = set()
-            try:
-                # Parse HTML
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                # Extract URLs from various HTML elements
-                for tag in soup.find_all(['a', 'link', 'script', 'img', 'form', 'iframe']):
-                    for attr in ['href', 'src', 'action', 'data-url']:
-                        link = tag.get(attr)
-                        if link:
-                            try:
-                                absolute_url = urljoin(url, link)
-                                normalized_url = normalize_url(absolute_url)
-                                print(f"[extract_urls] Found: {link} -> {normalized_url}")
-                                if is_valid_url(normalized_url):
-                                    urls.add(normalized_url)
-                                    print(f"[extract_urls] Added: {normalized_url}")
-                            except Exception as e:
-                                print(f"[extract_urls] Exception for {link}: {e}")
-                                continue
-                
-                # Extract URLs from onclick attributes
-                elements_with_onclick = soup.find_all(attrs={"onclick": True})
-                for element in elements_with_onclick:
-                    onclick = element.get('onclick', '')
-                    matches = re.findall(r'["\']((https?://|/)[^"\']+)["\']', onclick)
-                    for match in matches:
-                        try:
-                            absolute_url = urljoin(url, match[0])
-                            normalized_url = normalize_url(absolute_url)
-                            print(f"[extract_urls][onclick] Found: {match[0]} -> {normalized_url}")
-                            if is_valid_url(normalized_url):
-                                urls.add(normalized_url)
-                                print(f"[extract_urls][onclick] Added: {normalized_url}")
-                        except Exception as e:
-                            print(f"[extract_urls][onclick] Exception for {match[0]}: {e}")
-                            continue
-                
-                # Extract URLs from inline JavaScript
-                for script in soup.find_all('script'):
-                    if script.string:
-                        matches = re.findall(r'["\']((https?://|/)[^"\']+)["\']', script.string)
-                        for match in matches:
-                            try:
-                                absolute_url = urljoin(url, match[0])
-                                normalized_url = normalize_url(absolute_url)
-                                print(f"[extract_urls][script] Found: {match[0]} -> {normalized_url}")
-                                if is_valid_url(normalized_url):
-                                    urls.add(normalized_url)
-                                    print(f"[extract_urls][script] Added: {normalized_url}")
-                            except Exception as e:
-                                print(f"[extract_urls][script] Exception for {match[0]}: {e}")
-                                continue
-                
-                # Extract URLs from CSS
-                for style in soup.find_all('style'):
-                    if style.string:
-                        matches = re.findall(r'url\(["\']?([^)"]+)["\']?\)', style.string)
-                        for match in matches:
-                            try:
-                                absolute_url = urljoin(url, match)
-                                normalized_url = normalize_url(absolute_url)
-                                print(f"[extract_urls][style] Found: {match} -> {normalized_url}")
-                                if is_valid_url(normalized_url):
-                                    urls.add(normalized_url)
-                                    print(f"[extract_urls][style] Added: {normalized_url}")
-                            except Exception as e:
-                                print(f"[extract_urls][style] Exception for {match}: {e}")
-                                continue
-            except Exception as e:
-                print(f"\nError extracting URLs from {url}: {str(e)}")
-            return urls
 
         def scan_page(url: str, depth: int) -> tuple[List[Dict[str, str]], Set[str]]:
             page_findings = []
@@ -1305,11 +1398,7 @@ This tool can detect various types of secrets including:
     output_format = args.format
     exclusion_patterns = args.exclude
     rate_limit = args.rate_limit
-    
-    # Register an exit handler to save findings when the program exits
-    import atexit
-    import signal
-    
+
     def exit_handler():
         if findings and output_file:
             print("\nExiting. Saving any findings...")
@@ -1337,7 +1426,7 @@ This tool can detect various types of secrets including:
     # Function to check if it's time to autosave
     def check_autosave():
         nonlocal last_save_time
-        if output_file and findings and (time.time() - last_save_time) > autosave_interval:
+        if output_file and findings and (time.time() - last_save_time) > min(autosave_interval, 30):  # Save at least every 30 seconds
             print(f"\nAuto-saving {len(findings)} findings...")
             detector.save_findings_to_file(findings, output_file, format_type=output_format)
             last_save_time = time.time()
@@ -1408,7 +1497,7 @@ This tool can detect various types of secrets including:
                                 print(f"Results saved to: {output_file}")
                                 last_save_time = current_time
                             except Exception as e:
-                                print(f"Error during autosave: {str(e)}")
+                                print(f"Error during autosave: {e}")
             
             # Start the autosave thread if output file is specified
             if output_file:
