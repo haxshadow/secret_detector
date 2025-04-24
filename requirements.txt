@@ -4,3 +4,5 @@ tqdm>=4.66.0
 urllib3>=2.0.0
 argparse>=1.4.0
 pathlib>=1.0.1
+colorama
+rich
